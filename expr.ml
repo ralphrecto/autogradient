@@ -18,6 +18,27 @@ type 'a expr =
   (* combinators *)
   | Binop of 'a * binop * 'a expr * 'a expr
 
+(* string_of functions for expr types. *)
+let string_of_const = function
+  | Int i -> string_of_int i
+  | Famous E -> "e"
+  | Famous Pi -> "pi"
+
+let string_of_binop = function
+  | Add -> "+"
+  | Sub -> "-"
+  | Mult -> "*"
+  | Div -> "/"
+  | Exp -> "^"
+
+let rec string_of_expr = function
+  | Const (_, c) -> string_of_const c
+  | Var (_, var) -> var
+  | Binop (_, op, left, right) ->
+      let left_str = string_of_expr left in
+      let right_str = string_of_expr right in
+      "( " ^ left_str ^ " " ^ (string_of_binop op) ^ " " ^ right_str ^ " )"
+
 (* name_tree will give each node in tree a unique string identifier except for Vars that have
  * the same string variable name, which will be named the same. *)
 let name_tree (tree: 'a expr) : string expr =
@@ -77,6 +98,7 @@ let rec simplify (tree: 'a expr) : unit expr =
     | Add, Const (_, Int 0), _ -> simple_right
     (* subtration simplifications *)
     | Sub, Const (_, Int left_int), Const (_, Int right_int) -> Const ((), Int (left_int - right_int))
+    | Sub, _, Const (_, Int 0) -> simple_left
     (* multiplication simplifications *)
     | Mult, Const (_, Int left_int), Const (_, Int right_int) -> Const ((), Int (left_int * right_int))
     | Mult, _, Const (_, Int 1) -> simple_left
@@ -94,57 +116,61 @@ let rec simplify (tree: 'a expr) : unit expr =
     | _ -> Binop ((), op, simple_left, simple_right)
   end
 
-let rec differential (tree: 'a expr) (deriv_var : string) : unit expr =
-  match tree with
-  | Const (_, _) -> Const ((), Int 0)
-  | Var (_, var) ->
-      if var = deriv_var then Const ((), Int 1)
-      else Const ((), Int 0)
-  (* sum rule *)
-  | Binop (_, Add, left, right) ->
-      Binop ((), Add, differential left deriv_var, differential right deriv_var)
-  | Binop (_, Sub, left, right) ->
-      Binop ((), Sub, differential left deriv_var, differential right deriv_var)
-  (* product rule *)
-  | Binop (_, Mult, left, right) ->
-      let left_mult_right_prime = Binop ((), Mult, left, differential right deriv_var) in
-      let right_mult_left_prime = Binop ((), Mult, differential left deriv_var, right) in
-      Binop ((), Add, left_mult_right_prime, right_mult_left_prime)
-  (* quotient rule *)
-  | Binop (_, Div, left, right) ->
-      let left_mult_right_prime = Binop ((), Mult, left, differential right deriv_var) in
-      let right_mult_left_prime = Binop ((), Mult, differential left deriv_var, right) in
-      Binop ((), Div,
-        Binop ((), Sub, right_mult_left_prime, left_mult_right_prime),
-        Binop ((), Exp, right, Const ((), Int 2))
-      )
-  | Binop (_, Exp, left, right) -> begin
-    match left, simplify right with
-    (* exponential rule for e^x + chain rule *)
-    | Const (_, Famous E), _ ->
-        Binop ((), Mult, tree, differential right deriv_var)
-    (* power rule + chain rule *)
-    | _, Const (_, Int r) when r <> 0 ->
-        Binop ((), Mult,
-          Binop ((), Mult, Const ((), Int r), Binop ((), Exp, left, Const ((), Int (r-1)))),
-          differential left deriv_var
+let differential (tree: 'a expr) (deriv_var : string) : unit expr =
+  let rec inner (subtree: 'a expr) (deriv_var : string) : unit expr =
+    match subtree with
+    | Const (_, _) -> Const ((), Int 0)
+    | Var (_, var) ->
+        if var = deriv_var then Const ((), Int 1)
+        else Const ((), Int 0)
+    (* sum rule *)
+    | Binop (_, Add, left, right) ->
+        Binop ((), Add, inner left deriv_var, inner right deriv_var)
+    | Binop (_, Sub, left, right) ->
+        Binop ((), Sub, inner left deriv_var, inner right deriv_var)
+    (* product rule *)
+    | Binop (_, Mult, left, right) ->
+        let left_mult_right_prime = Binop ((), Mult, left, inner right deriv_var) in
+        let right_mult_left_prime = Binop ((), Mult, inner left deriv_var, right) in
+        Binop ((), Add, left_mult_right_prime, right_mult_left_prime)
+    (* quotient rule *)
+    | Binop (_, Div, left, right) ->
+        let left_mult_right_prime = Binop ((), Mult, left, inner right deriv_var) in
+        let right_mult_left_prime = Binop ((), Mult, inner left deriv_var, right) in
+        Binop ((), Div,
+          Binop ((), Sub, right_mult_left_prime, left_mult_right_prime),
+          Binop ((), Exp, right, Const ((), Int 2))
         )
-    | _ -> failwith "Not yet implemented."
-  end
+    | Binop (_, Exp, left, right) -> begin
+      match left, simplify right with
+      (* exponential rule for e^x + chain rule *)
+      | Const (_, Famous E), _ ->
+          Binop ((), Mult, subtree, inner right deriv_var)
+      (* power rule + chain rule *)
+      | _, Const (_, Int r) when r <> 0 ->
+          Binop ((), Mult,
+            Binop ((), Mult, Const ((), Int r), Binop ((), Exp, left, Const ((), Int (r-1)))),
+            inner left deriv_var
+          )
+      | _ -> failwith "Not yet implemented."
+    end in
 
-let () =
-  let sigmoid: unit expr =
+  inner tree deriv_var |> simplify
+
+let sigmoid: unit expr =
+  Binop ((),
+    Div,
+    Const ((), Int 1),
     Binop ((),
-      Div,
+      Add,
       Const ((), Int 1),
       Binop ((),
-        Add,
-        Const ((), Int 1),
-        Binop ((),
-          Exp,
-          Const ((), Famous E),
-          Var ((), "x")
-        )
+        Exp,
+        Const ((), Famous E),
+        Var ((), "x")
       )
-    ) in
-  name_tree sigmoid |> ignore
+    )
+  )
+
+let () =
+  differential sigmoid "x" |> string_of_expr |> print_string
