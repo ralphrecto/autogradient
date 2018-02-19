@@ -1,4 +1,5 @@
 open Core.Std
+open Graph
 
 (* Helper types for expr. *)
 type famous_const = E | Pi
@@ -61,6 +62,75 @@ let generate_dag_edges (named_tree: string expr) : (string * string) list =
         (get_name left_subtree, name) :: (get_name right_subtree, name) :: subtree_edges in
 
   inner [] named_tree
+
+let rec simplify (tree: 'a expr) : unit expr =
+  match tree with
+  | Const (_, c) -> Const ((), c)
+  | Var (_, v) -> Var ((), v)
+  | Binop (_, op, left, right) -> begin
+    let simple_left = simplify left in
+    let simple_right = simplify right in
+    match op, simple_left, simple_right with
+    (* addition simplifications *)
+    | Add, Const (_, Int left_int), Const (_, Int right_int) -> Const ((), Int (left_int + right_int))
+    | Add, _, Const (_, Int 0) -> simple_left
+    | Add, Const (_, Int 0), _ -> simple_right
+    (* subtration simplifications *)
+    | Sub, Const (_, Int left_int), Const (_, Int right_int) -> Const ((), Int (left_int - right_int))
+    (* multiplication simplifications *)
+    | Mult, Const (_, Int left_int), Const (_, Int right_int) -> Const ((), Int (left_int * right_int))
+    | Mult, _, Const (_, Int 1) -> simple_left
+    | Mult, Const (_, Int 1), _ -> simple_right
+    | Mult, Const (_, Int 0), _
+    | Mult, _, Const (_, Int 0) -> Const ((), Int 0)
+    (* division simplifications *)
+    | Div, _, Const (_, Int 1) -> simple_left
+    | Div, Const (_, Int 0), _ -> Const ((), Int 0)
+    (* exponentiation simplifications *)
+    | Exp, _, Const ((), Int 1) -> simple_left
+    | Exp, _, Const ((), Int 0)
+    | Exp, Const ((), Int 1), _ -> Const ((), Int 1)
+    | Exp, Const ((), Int 0), _ -> Const ((), Int 0)
+    | _ -> Binop ((), op, simple_left, simple_right)
+  end
+
+let rec differential (tree: 'a expr) (deriv_var : string) : unit expr =
+  match tree with
+  | Const (_, _) -> Const ((), Int 0)
+  | Var (_, var) ->
+      if var = deriv_var then Const ((), Int 1)
+      else Const ((), Int 0)
+  (* sum rule *)
+  | Binop (_, Add, left, right) ->
+      Binop ((), Add, differential left deriv_var, differential right deriv_var)
+  | Binop (_, Sub, left, right) ->
+      Binop ((), Sub, differential left deriv_var, differential right deriv_var)
+  (* product rule *)
+  | Binop (_, Mult, left, right) ->
+      let left_mult_right_prime = Binop ((), Mult, left, differential right deriv_var) in
+      let right_mult_left_prime = Binop ((), Mult, differential left deriv_var, right) in
+      Binop ((), Add, left_mult_right_prime, right_mult_left_prime)
+  (* quotient rule *)
+  | Binop (_, Div, left, right) ->
+      let left_mult_right_prime = Binop ((), Mult, left, differential right deriv_var) in
+      let right_mult_left_prime = Binop ((), Mult, differential left deriv_var, right) in
+      Binop ((), Div,
+        Binop ((), Sub, right_mult_left_prime, left_mult_right_prime),
+        Binop ((), Exp, right, Const ((), Int 2))
+      )
+  | Binop (_, Exp, left, right) -> begin
+    match left, simplify right with
+    (* exponential rule for e^x + chain rule *)
+    | Const (_, Famous E), _ ->
+        Binop ((), Mult, tree, differential right deriv_var)
+    (* power rule + chain rule *)
+    | _, Const (_, Int r) when r <> 0 ->
+        Binop ((), Mult,
+          Binop ((), Mult, Const ((), Int r), Binop ((), Exp, left, Const ((), Int (r-1)))),
+          differential left deriv_var
+        )
+    | _ -> failwith "Not yet implemented."
+  end
 
 let () =
   let sigmoid: unit expr =
