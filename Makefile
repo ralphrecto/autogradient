@@ -1,5 +1,5 @@
 all:
-	ocamlbuild expr.byte
+	corebuild expr.byte
 
 clean:
 	rm -rf _build/

@@ -1,7 +1,12 @@
-(* Const helper types for expr. *)
+open Core.Std
+
+(* Helper types for expr. *)
 type famous_const = E | Pi
-type const = IntConst of int
-  | FamousConst of famous_const
+type const =
+  Int of int
+  | Famous of famous_const
+
+type binop = Add | Sub | Mult | Div | Exp
 
 (* Type defining possible mathematical expressions.
  * 'a is a type that can be used to tag a node with auxillary information. *)
@@ -10,29 +15,49 @@ type 'a expr =
   Const of 'a * const
   | Var of 'a * string
   (* combinators *)
-  | Add of 'a * 'a expr * 'a expr
-  | Sub of 'a * 'a expr * 'a expr
-  | Mult of 'a * 'a expr * 'a expr
-  | Div of 'a * 'a expr * 'a expr
-  | Exp of 'a * 'a expr * 'a expr (* tag, base, exponent *)
+  | Binop of 'a * binop * 'a expr * 'a expr
 
-(* TODO: describe node naming scheme. *)
+(* name_tree will give each node in tree a unique string identifier except for Vars that have
+ * the same string variable name, which will be named the same. *)
 let name_tree (tree: 'a expr) : string expr =
   (* Node naming utilities. *)
   let counter : int ref = ref 0 in
   let fresh_name () : string =
     incr counter;
     "w" ^ (string_of_int !counter) in
-  let rec name_subtree (subtree: 'a expr) : string expr =
+
+  (* name_subtree names the nodes in the given given subtree, holding already seen mappings
+   * between variable names and node names in varmap (a map of form variable name -> node name). *)
+  let rec name_subtree (varmap: string String.Map.t) (subtree: 'a expr) : string String.Map.t * string expr =
     match subtree with
-    | Const (_, c) -> Const (fresh_name (), c)
-    | Var (_, v) -> Var (fresh_name (), v)
-    | Add (_, x, y) -> Add (fresh_name (), name_subtree x, name_subtree y)
-    | Sub (_, x, y) -> Sub (fresh_name (), name_subtree x, name_subtree y)
-    | Mult (_, x, y) -> Mult (fresh_name (), name_subtree x, name_subtree y)
-    | Div (_, x, y) -> Div (fresh_name (), name_subtree x, name_subtree y)
-    | Exp (_, x, y) -> Exp (fresh_name (), name_subtree x, name_subtree y) in
-  name_subtree tree
+    | Const (_, c) -> varmap, Const (fresh_name (), c)
+    | Var (_, var) -> begin
+        match Map.find varmap var with
+        | None ->
+            let varname = fresh_name () in
+            Map.add varmap ~key:var ~data:varname, Var (varname, var)
+        | Some varname -> varmap, Var (varname, var)
+    end
+    | Binop (_, op, left_subtree, right_subtree) ->
+        let left_varmap, named_left_subtree = name_subtree varmap left_subtree in
+        let right_varmap, named_right_subtree = name_subtree left_varmap right_subtree in
+        right_varmap, Binop (fresh_name (), op, named_left_subtree, named_right_subtree) in
+
+  name_subtree String.Map.empty tree |> snd
 
 let () =
-  print_int 3
+  let sigmoid: unit expr =
+    Binop ((),
+      Div,
+      Const ((), Int 1),
+      Binop ((),
+        Add,
+        Const ((), Int 1),
+        Binop ((),
+          Exp,
+          Const ((), Famous E),
+          Var ((), "x")
+        )
+      )
+    ) in
+  name_tree sigmoid |> ignore
