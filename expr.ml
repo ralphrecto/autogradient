@@ -18,6 +18,25 @@ type 'a expr =
   (* combinators *)
   | Binop of 'a * binop * 'a expr * 'a expr
 
+module Expr = struct
+  let rec unitize (expr : 'a expr): unit expr =
+    match expr with
+    | Const (_, c) -> Const ((), c)
+    | Var (_, v) -> Var ((), v)
+    | Binop (_, op, l, r) -> Binop ((), op, unitize l, unitize r)
+
+  let generic_binop (op: binop) (l: 'a expr) (r: 'a expr): unit expr = Binop ((), Add, unitize l, unitize r)
+
+  let ( + ): 'a expr -> 'a expr -> unit expr = generic_binop Add
+  let ( - ) = generic_binop Sub
+  let ( * ) = generic_binop Mult
+  let ( / ) = generic_binop Div
+  let ( ^ ) = generic_binop Exp
+
+  let int_of i = Const ((), Int i)
+  let famous_const_of f = Const ((), Famous f)
+end
+
 (* string_of functions for expr types. *)
 let string_of_const = function
   | Int i -> string_of_int i
@@ -105,48 +124,6 @@ let rec simplify (tree: 'a expr) : unit expr =
     | _ -> Binop ((), op, simple_left, simple_right)
   end
 
-(* Take the derivative of the given expression w.r.t. the variable deriv_var. *)
-let differential (tree: 'a expr) (deriv_var : string) : unit expr =
-  let rec inner (subtree: 'a expr) (deriv_var : string) : unit expr =
-    match subtree with
-    | Const (_, _) -> Const ((), Int 0)
-    | Var (_, var) ->
-        if var = deriv_var then Const ((), Int 1)
-        else Const ((), Int 0)
-    (* sum rule *)
-    | Binop (_, Add, left, right) ->
-        Binop ((), Add, inner left deriv_var, inner right deriv_var)
-    | Binop (_, Sub, left, right) ->
-        Binop ((), Sub, inner left deriv_var, inner right deriv_var)
-    (* product rule *)
-    | Binop (_, Mult, left, right) ->
-        let left_mult_right_prime = Binop ((), Mult, left, inner right deriv_var) in
-        let right_mult_left_prime = Binop ((), Mult, inner left deriv_var, right) in
-        Binop ((), Add, left_mult_right_prime, right_mult_left_prime)
-    (* quotient rule *)
-    | Binop (_, Div, left, right) ->
-        let left_mult_right_prime = Binop ((), Mult, left, inner right deriv_var) in
-        let right_mult_left_prime = Binop ((), Mult, inner left deriv_var, right) in
-        Binop ((), Div,
-          Binop ((), Sub, right_mult_left_prime, left_mult_right_prime),
-          Binop ((), Exp, right, Const ((), Int 2))
-        )
-    | Binop (_, Exp, left, right) -> begin
-      match left, simplify right with
-      (* exponential rule for e^x + chain rule *)
-      | Const (_, Famous E), _ ->
-          Binop ((), Mult, subtree, inner right deriv_var)
-      (* power rule + chain rule *)
-      | _, Const (_, Int r) when r <> 0 ->
-          Binop ((), Mult,
-            Binop ((), Mult, Const ((), Int r), Binop ((), Exp, left, Const ((), Int (r-1)))),
-            inner left deriv_var
-          )
-      | _ -> failwith "Not yet implemented."
-    end in
-
-  inner tree deriv_var |> simplify
-
 (* Given a named expression tree, returns a map of form (node name -> simple form of node).
  * The simple form of a node is the same if it is a Const or a Var. If it is Binop, its operands
  * are rewritten to Vars, where the Var name is the name of each operand's node in the named tree. *)
@@ -164,6 +141,24 @@ let get_simple_mappings (named_tree: string expr) : (unit expr) String.Map.t =
 
   inner named_tree String.Map.empty
 
+let get_full_mappings (named_tree: 'a expr) : (unit expr) String.Map.t =
+  let rec inner (named_subtree: string expr) (exprmap: (unit expr) String.Map.t) : ((unit expr) String.Map.t) * (unit expr) =
+    match named_subtree with
+    | Const (name, c) ->
+        let unitized = Const ((), c) in
+        Map.add exprmap ~key:name ~data:unitized, unitized
+    | Var (name, v) ->
+        let unitized = Var ((), v) in
+        Map.add exprmap ~key:name ~data:unitized, unitized
+    | Binop (name, op, left_subtree, right_subtree) -> begin
+      let left_map, left_unitized = inner left_subtree exprmap in
+      let right_map, right_unitized = inner right_subtree left_map in
+      let unitized = Binop ((), op, left_unitized, right_unitized) in
+      Map.add right_map ~key:name ~data:unitized, unitized
+    end in
+
+  inner named_tree String.Map.empty |> fst
+
 (* Generates the edges of the computation DAG given a named tree of expressions. A node wi depends on a
  * node wj if wj is used in the definition of wi. Such a dependency induces an edge of form (wj, wi) to be
  * included in the output. In tree terms, each parent depends on each of its children. *)
@@ -177,28 +172,116 @@ let generate_compute_dag_edges (named_tree: string expr) : (string * string) lis
 
   inner [] named_tree
 
-(* Given the named expression tree, computes the computation DAG of the tree and returns
- * the reverse of a topological sort of the DAG. *)
-let reverse_topo_sort (named_tree: string expr) : string list =
-  (* Set up modules to be used, mostly graph structures. *)
-  let module StringCmp = struct
-    type t = string
-    let compare = String.compare
-    let hash = String.hash
-    let equal = String.equal
-  end in
-  let module ComputeGraph = Persistent.Digraph.Concrete(StringCmp) in
-  let module TopoComputeGraph = Topological.Make(ComputeGraph) in
+module StringCmp = struct
+  type t = string
+  let compare = String.compare
+  let hash = String.hash
+  let equal = String.equal
+end
 
+module ComputeGraph = Persistent.Digraph.Concrete(StringCmp)
+
+(* Given the named expression tree, computes the computation DAG of the tree. *)
+let get_compute_dag (named_tree: string expr) : ComputeGraph.t =
   (* Generate the edges of the compute DAG. *)
   let computed_dag_edges = generate_compute_dag_edges named_tree in
 
   (* Add the computed edges to a DAG. *)
   let foldf graph (node1, node2) = ComputeGraph.add_edge graph node1 node2 in
-  let compute_dag = List.fold_left ~init:ComputeGraph.empty ~f:foldf computed_dag_edges in
+  List.fold_left ~init:ComputeGraph.empty ~f:foldf computed_dag_edges
 
-  (* Compute the reverse of a topological sort of the DAG. *)
-  TopoComputeGraph.fold (fun node topolist -> node :: topolist) compute_dag []
+(* Computes a reverse topological sort of the given compute_dag. *)
+let reverse_topo_sort (compute_dag: ComputeGraph.t) : string list =
+  let module TopoComputeGraph = Topological.Make(ComputeGraph) in
+  TopoComputeGraph.fold (fun node nodelist -> node :: nodelist) compute_dag []
+
+let rec simple_differential (simple_mappings: unit expr String.Map.t) (simple_expr: 'a expr) (deriv_var: string) : unit expr =
+  match simple_expr with
+  | Const _ -> Expr.( int_of 0 )
+  | Var (_, var) -> begin
+      if var = deriv_var then Expr.( int_of 1 )
+      else Expr.( int_of 0 )
+  end
+  | Binop (_, op, Var (left_tag, left_var), Var (right_tag, right_var)) -> begin
+    let left_operand = Var (left_tag, left_var) in
+    let right_operand = Var (right_tag, right_var) in
+    let left_unitized = Expr.( unitize left_operand ) in
+    let right_unitized = Expr.( unitize right_operand ) in
+    let left_deriv = simple_differential simple_mappings left_operand deriv_var in
+    let right_deriv = simple_differential simple_mappings right_operand deriv_var in
+    match op with
+    (* sum rules *)
+    | Add -> Expr.( left_deriv + right_deriv)
+    | Sub -> Expr.( left_deriv - right_deriv)
+    (* product rule *)
+    | Mult -> Expr.( (left_unitized * right_deriv) + (left_deriv * right_unitized) )
+    (* quotient rule *)
+    | Div -> Expr.(
+      let numerator = (left_unitized * right_deriv) + (left_deriv * right_unitized) in
+      let denominator = right_unitized ^ (int_of 2) in
+      numerator / denominator )
+    | Exp -> begin
+      match Map.find simple_mappings left_var, Map.find simple_mappings right_var with
+      (* e^x rule *)
+      | Some ( Const ((), Famous E) ), Some _ -> Expr.(
+        ((famous_const_of E) ^ (right_unitized)) * (simple_differential simple_mappings right_unitized deriv_var) )
+      | _ -> failwith "operations not yet supported."
+    end
+  end
+  | _ -> failwith "fatal state: called simple differential on non-simple expression."
+
+let compute_chain_rule_cmp
+  (simple_mappings: (unit expr) String.Map.t)
+  (deriv_var: string)
+  (sumopt: unit expr option)
+  (next_components: (unit expr option) * (unit expr option)) : unit expr option =
+  match sumopt, next_components with
+  | Some sum, (Some deriv, Some simple_expr) ->
+      Some ( Expr.( (deriv * (simple_differential simple_mappings simple_expr deriv_var)) + sum ) )
+  | _ -> None
+
+let compute_deriv_foldf
+  (compute_dag: ComputeGraph.t)
+  (simple_mappings: (unit expr) String.Map.t)
+  (deriv_map: (unit expr) String.Map.t)
+  (next_var: string) : (unit expr) String.Map.t =
+    let out_nodes = ComputeGraph.succ compute_dag next_var in
+    let out_nodes_deriv_mapping: unit expr option list = List.map ~f:(Map.find deriv_map) out_nodes in
+    let out_nodes_simple_mapping: unit expr option list = List.map ~f:(Map.find simple_mappings) out_nodes in
+    match List.zip out_nodes_deriv_mapping out_nodes_simple_mapping with
+    | None -> "out nodes of var " ^ next_var ^ " do not all have simple mappings and deriv mappings." |> failwith
+    | Some out_nodes_components -> begin
+        let foldf = compute_chain_rule_cmp simple_mappings next_var in
+        let next_var_deriv_opt = List.fold_left ~f:foldf ~init:(Some (Const ((), Int 0))) out_nodes_components in
+        match next_var_deriv_opt with
+        | None -> "could not compute partial derivative of " ^ next_var |> failwith
+        | Some next_var_deriv -> Map.add deriv_map ~key:next_var ~data:(simplify next_var_deriv)
+    end
+
+let compute_derivs (named_tree: string expr): (unit expr) String.Map.t =
+  let compute_dag: ComputeGraph.t = get_compute_dag named_tree in
+  match reverse_topo_sort compute_dag with
+  | [] -> failwith "fatal state: no variables found in the reverse toposort of the compute dag."
+  | deriv_var :: rest_of_vars ->
+      (* For each var, we are computing the gradient d${deriv_var}/d${var}, which equals 1 when var === deriv_var. *)
+      let deriv_map_init = Map.add String.Map.empty ~key:deriv_var ~data:(Const ((), Int 1)) in
+      let simple_mappings = get_simple_mappings named_tree in
+      List.fold_left ~f:(compute_deriv_foldf compute_dag simple_mappings) ~init:deriv_map_init rest_of_vars
+
+let expand (full_mappings: unit expr String.Map.t) (expr_with_simple_subexpr: unit expr) : unit expr option =
+  let rec expand_inner (subexpr: unit expr) : unit expr option =
+    match subexpr with
+    | Const _ -> Some subexpr
+    | Var ((), varname) -> Map.find full_mappings varname |> Option.map ~f:ident
+    | Binop ((), op, left, right) -> begin
+      let expanded_left_opt = expand_inner left in
+      let expanded_right_opt = expand_inner right in
+      match expanded_left_opt, expanded_right_opt with
+      | Some expanded_left, Some expanded_right -> Some (Binop ((), op, expanded_left, expanded_right))
+      | _ -> None
+    end in
+
+  expand_inner expr_with_simple_subexpr |> Option.map ~f:simplify
 
 let sigmoid: unit expr =
   Binop ((),
@@ -216,4 +299,17 @@ let sigmoid: unit expr =
   )
 
 let () =
-  differential sigmoid "x" |> string_of_expr |> print_string
+  let named_sigmoid : string expr = name_tree sigmoid in
+  let full_mappings = get_full_mappings named_sigmoid in
+  full_mappings |> String.Map.sexp_of_t (fun expr -> Sexp.Atom (string_of_expr expr)) |> Sexp.to_string |> print_endline;
+  let derivs = compute_derivs named_sigmoid in
+  match Map.find derivs "w4" with
+  | None -> ()
+  | Some expr -> begin
+    match expand full_mappings expr, Map.find full_mappings "w4" with
+    | Some expanded, Some orig -> begin
+        orig |> string_of_expr |> print_endline;
+        expanded |> string_of_expr |> print_endline
+    end
+    | _ -> print_endline "wut"
+  end
