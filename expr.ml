@@ -71,19 +71,6 @@ let name_tree (tree: 'a expr) : string expr =
 let get_name = function
   | Const (name, _) | Var (name, _) | Binop (name, _, _, _) -> name
 
-(* Generates the edges of the computation DAG given a named tree of expressions. A node wi depends on a
- * node wj if wj is used in the definition of wi. Such a dependency induces an edge of form (wj, wi) to be
- * included in the output. In tree terms, each parent depends on each of its children. *)
-let generate_dag_edges (named_tree: string expr) : (string * string) list =
-  let rec inner (edges: (string * string) list) (named_subtree: string expr) : (string * string) list =
-    match named_subtree with
-    | Const _ | Var _ -> edges
-    | Binop (name, _, left_subtree, right_subtree) ->
-        let subtree_edges = inner (inner edges left_subtree) right_subtree in
-        (get_name left_subtree, name) :: (get_name right_subtree, name) :: subtree_edges in
-
-  inner [] named_tree
-
 (* Simplify the given tree of expressions into simpler expressions using mathematical laws,
  * mostly identity laws under operators. *)
 let rec simplify (tree: 'a expr) : unit expr =
@@ -176,6 +163,42 @@ let get_simple_mappings (named_tree: string expr) : (unit expr) String.Map.t =
       end in
 
   inner named_tree String.Map.empty
+
+(* Generates the edges of the computation DAG given a named tree of expressions. A node wi depends on a
+ * node wj if wj is used in the definition of wi. Such a dependency induces an edge of form (wj, wi) to be
+ * included in the output. In tree terms, each parent depends on each of its children. *)
+let generate_compute_dag_edges (named_tree: string expr) : (string * string) list =
+  let rec inner (edges: (string * string) list) (named_subtree: string expr) : (string * string) list =
+    match named_subtree with
+    | Const _ | Var _ -> edges
+    | Binop (name, _, left_subtree, right_subtree) ->
+        let subtree_edges = inner (inner edges left_subtree) right_subtree in
+        (get_name left_subtree, name) :: (get_name right_subtree, name) :: subtree_edges in
+
+  inner [] named_tree
+
+(* Given the named expression tree, computes the computation DAG of the tree and returns
+ * the reverse of a topological sort of the DAG. *)
+let reverse_topo_sort (named_tree: string expr) : string list =
+  (* Set up modules to be used, mostly graph structures. *)
+  let module StringCmp = struct
+    type t = string
+    let compare = String.compare
+    let hash = String.hash
+    let equal = String.equal
+  end in
+  let module ComputeGraph = Persistent.Digraph.Concrete(StringCmp) in
+  let module TopoComputeGraph = Topological.Make(ComputeGraph) in
+
+  (* Generate the edges of the compute DAG. *)
+  let computed_dag_edges = generate_compute_dag_edges named_tree in
+
+  (* Add the computed edges to a DAG. *)
+  let foldf graph (node1, node2) = ComputeGraph.add_edge graph node1 node2 in
+  let compute_dag = List.fold_left ~init:ComputeGraph.empty ~f:foldf computed_dag_edges in
+
+  (* Compute the reverse of a topological sort of the DAG. *)
+  TopoComputeGraph.fold (fun node topolist -> node :: topolist) compute_dag []
 
 let sigmoid: unit expr =
   Binop ((),
