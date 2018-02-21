@@ -84,6 +84,8 @@ let generate_dag_edges (named_tree: string expr) : (string * string) list =
 
   inner [] named_tree
 
+(* Simplify the given tree of expressions into simpler expressions using mathematical laws,
+ * mostly identity laws under operators. *)
 let rec simplify (tree: 'a expr) : unit expr =
   match tree with
   | Const (_, c) -> Const ((), c)
@@ -116,6 +118,7 @@ let rec simplify (tree: 'a expr) : unit expr =
     | _ -> Binop ((), op, simple_left, simple_right)
   end
 
+(* Take the derivative of the given expression w.r.t. the variable deriv_var. *)
 let differential (tree: 'a expr) (deriv_var : string) : unit expr =
   let rec inner (subtree: 'a expr) (deriv_var : string) : unit expr =
     match subtree with
@@ -156,6 +159,23 @@ let differential (tree: 'a expr) (deriv_var : string) : unit expr =
     end in
 
   inner tree deriv_var |> simplify
+
+(* Given a named expression tree, returns a map of form (node name -> simple form of node).
+ * The simple form of a node is the same if it is a Const or a Var. If it is Binop, its operands
+ * are rewritten to Vars, where the Var name is the name of each operand's node in the named tree. *)
+let get_simple_mappings (named_tree: string expr) : (unit expr) String.Map.t =
+  let rec inner (named_subtree: string expr) (exprmap: (unit expr) String.Map.t) : (unit expr) String.Map.t =
+    match named_subtree with
+    | Const (name, c) -> Map.add exprmap ~key:name ~data:(Const ((), c))
+    | Var (name, v) -> Map.add exprmap ~key:name ~data:(Var ((), v))
+    | Binop (name, op, left_subtree, right_subtree) -> begin
+        let left_name = get_name left_subtree in
+        let right_name = get_name right_subtree in
+        let simple_binop = Binop ((), op, Var ((), left_name), Var ((), right_name)) in
+        exprmap |> inner left_subtree |> inner right_subtree |> Map.add ~key:name ~data:simple_binop
+      end in
+
+  inner named_tree String.Map.empty
 
 let sigmoid: unit expr =
   Binop ((),
