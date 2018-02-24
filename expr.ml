@@ -25,9 +25,9 @@ module Expr = struct
     | Var (_, v) -> Var ((), v)
     | Binop (_, op, l, r) -> Binop ((), op, unitize l, unitize r)
 
-  let generic_binop (op: binop) (l: 'a expr) (r: 'a expr): unit expr = Binop ((), Add, unitize l, unitize r)
+  let generic_binop (op: binop) (l: 'a expr) (r: 'a expr): unit expr = Binop ((), op, unitize l, unitize r)
 
-  let ( + ): 'a expr -> 'a expr -> unit expr = generic_binop Add
+  let ( + ) = generic_binop Add
   let ( - ) = generic_binop Sub
   let ( * ) = generic_binop Mult
   let ( / ) = generic_binop Div
@@ -35,6 +35,7 @@ module Expr = struct
 
   let int_of i = Const ((), Int i)
   let famous_const_of f = Const ((), Famous f)
+  let var_of varname = Var ((), varname)
 end
 
 (* string_of functions for expr types. *)
@@ -237,7 +238,9 @@ let compute_chain_rule_cmp
   (next_components: (unit expr option) * (unit expr option)) : unit expr option =
   match sumopt, next_components with
   | Some sum, (Some deriv, Some simple_expr) ->
-      Some ( Expr.( (deriv * (simple_differential simple_mappings simple_expr deriv_var)) + sum ) )
+      let differential = simple_differential simple_mappings simple_expr deriv_var in
+      let ret = Expr.( (deriv * differential) + sum ) in
+      Some (simplify ret)
   | _ -> None
 
 let compute_deriv_foldf
@@ -277,39 +280,47 @@ let expand (full_mappings: unit expr String.Map.t) (expr_with_simple_subexpr: un
       let expanded_left_opt = expand_inner left in
       let expanded_right_opt = expand_inner right in
       match expanded_left_opt, expanded_right_opt with
-      | Some expanded_left, Some expanded_right -> Some (Binop ((), op, expanded_left, expanded_right))
+      | Some expanded_left, Some expanded_right ->
+          Some ((Binop ((), op, expanded_left, expanded_right)) |> simplify)
       | _ -> None
     end in
 
-  expand_inner expr_with_simple_subexpr |> Option.map ~f:simplify
+  expand_inner expr_with_simple_subexpr
 
-let sigmoid: unit expr =
-  Binop ((),
-    Div,
-    Const ((), Int 1),
-    Binop ((),
-      Add,
-      Const ((), Int 1),
-      Binop ((),
-        Exp,
-        Const ((), Famous E),
-        Var ((), "x")
-      )
-    )
-  )
+let get_var_names (named_tree: string expr) : string String.Map.t =
+  let rec inner (named_subtree: string expr) (mapacc: string String.Map.t) : string String.Map.t =
+    match named_subtree with
+    | Var (nodename, varname) -> Map.add mapacc ~key:varname ~data:nodename
+    | Binop (_, _, left, right) -> mapacc |> inner left |> inner right
+    | _ -> mapacc in
+
+  inner named_tree String.Map.empty
+
+let derive_and_expand_vars (named_tree: string expr) : unit expr String.Map.t =
+  let derivs = compute_derivs named_tree in
+  let var_to_name_map = get_var_names named_tree in
+  let full_mappings = get_full_mappings named_tree in
+
+  let foldf ~key:var ~data:varname (mapacc: unit expr String.Map.t) =
+    let full_deriv_opt = Option.(
+      Map.find derivs varname >>= fun varderiv ->
+      expand full_mappings varderiv
+    ) in
+    match full_deriv_opt with
+    | None -> "failed to compute derivative w.r.t. variable " ^ var |> failwith
+    | Some full_deriv -> Map.add mapacc ~key:var ~data:full_deriv in
+
+  Map.fold ~init:String.Map.empty ~f:foldf var_to_name_map
+
+let sigmoid: unit expr = Expr.(
+  (int_of 1) / ((int_of 1) + ((famous_const_of E) ^ ((int_of (-1)) * (var_of "x"))))
+)
+
+let expr1 : unit expr = Expr.(
+  ((var_of "x") * (int_of 3)) + ((var_of "x") * (int_of 4))
+)
 
 let () =
   let named_sigmoid : string expr = name_tree sigmoid in
-  let full_mappings = get_full_mappings named_sigmoid in
-  full_mappings |> String.Map.sexp_of_t (fun expr -> Sexp.Atom (string_of_expr expr)) |> Sexp.to_string |> print_endline;
-  let derivs = compute_derivs named_sigmoid in
-  match Map.find derivs "w4" with
-  | None -> ()
-  | Some expr -> begin
-    match expand full_mappings expr, Map.find full_mappings "w4" with
-    | Some expanded, Some orig -> begin
-        orig |> string_of_expr |> print_endline;
-        expanded |> string_of_expr |> print_endline
-    end
-    | _ -> print_endline "wut"
-  end
+  let var_derivs = derive_and_expand_vars named_sigmoid in
+  Map.iteri ~f:(fun ~key ~data -> print_endline (key ^ ": " ^ (string_of_expr data))) var_derivs
