@@ -36,6 +36,7 @@ module Expr = struct
   let int_of i = Const ((), Int i)
   let famous_const_of f = Const ((), Famous f)
   let var_of varname = Var ((), varname)
+  let neg e = (int_of (-1)) * e
 end
 
 (* string_of functions for expr types. *)
@@ -218,7 +219,7 @@ let rec simple_differential (simple_mappings: unit expr String.Map.t) (simple_ex
     | Mult -> Expr.( (left_unitized * right_deriv) + (left_deriv * right_unitized) )
     (* quotient rule *)
     | Div -> Expr.(
-      let numerator = (left_unitized * right_deriv) + (left_deriv * right_unitized) in
+      let numerator = (left_deriv * right_unitized) - (left_unitized * right_deriv) in
       let denominator = right_unitized ^ (int_of 2) in
       numerator / denominator )
     | Exp -> begin
@@ -313,14 +314,15 @@ let derive_and_expand_vars (named_tree: string expr) : unit expr String.Map.t =
   Map.fold ~init:String.Map.empty ~f:foldf var_to_name_map
 
 let sigmoid: unit expr = Expr.(
-  (int_of 1) / ((int_of 1) + ((famous_const_of E) ^ ((int_of (-1)) * (var_of "x"))))
+  (int_of 1) / ((int_of 1) + ((famous_const_of E) ^ (neg (var_of "x"))))
 )
 
 let expr1 : unit expr = Expr.(
-  ((var_of "x") * (int_of 3)) + ((var_of "x") * (int_of 4))
+  (int_of 1) / ((famous_const_of E) ^ (neg (var_of "x")))
 )
 
 let () =
   let named_sigmoid : string expr = name_tree sigmoid in
+  let named_expr1 = name_tree expr1 in
   let var_derivs = derive_and_expand_vars named_sigmoid in
   Map.iteri ~f:(fun ~key ~data -> print_endline (key ^ ": " ^ (string_of_expr data))) var_derivs
