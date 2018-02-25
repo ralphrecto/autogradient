@@ -313,7 +313,76 @@ let derive_and_expand_vars (named_tree: string expr) : unit expr String.Map.t =
 
   Map.fold ~init:String.Map.empty ~f:foldf var_to_name_map
 
-let sigmoid: unit expr = Expr.(
+let sigmoid (x: unit expr) : unit expr = Expr.(
+  (int_of 1) / ((int_of 1) + ((famous_const_of E) ^ (neg x)))
+)
+
+type layer = string list
+
+let rec layer (base: string) (num: int) : layer =
+  if num < 1 then
+    failwith "num must be >= 1."
+  else begin
+    let newvar = base ^ (string_of_int num) in
+    if num = 1 then [ newvar ]
+    else newvar :: layer base (num - 1)
+  end
+
+let layers: layer list = [
+  layer "x" 2 ;
+  layer "h" 3 ;
+  layer "y" 2
+]
+
+let named_layer_exprs (l: layer): (string * unit expr) list =
+  List.map ~f:(fun nodename -> (nodename, Expr.( var_of nodename ))) l
+
+let layer_exprs (l: layer): unit expr list =
+  List.map ~f:(fun nodename -> Expr.( var_of nodename )) l
+
+let gen_layer_exprs
+  (prev_layer_exprs: (string * unit expr) list)
+  (next_layer: layer): (string * unit expr) list =
+  let gen_weighted_prev_comb (nodename: string): unit expr =
+    let weight_linear_comb =
+      List.fold_left
+      ~init:Expr.(int_of 0)
+      ~f:(fun linearcombacc (prevname, prevexpr) ->
+        let weight_var = Expr.var_of ("w" ^ prevname ^ "_" ^ nodename) in
+        Expr.( linearcombacc + ( weight_var * prevexpr) )
+      )
+      prev_layer_exprs
+      in
+
+    sigmoid weight_linear_comb
+  in
+
+  List.map ~f:(fun nodename -> (nodename, gen_weighted_prev_comb nodename)) next_layer
+
+(* the last layer must have the same number of elements as the target layer,
+ * otherwise will return None. *)
+let network_error_expr (layers: layer list) (target: layer) : unit expr option =
+  let foldf (last_layer_exprs_opt: (string * unit expr) list option) (next_layer: layer) =
+    match last_layer_exprs_opt with
+    (* hit this case when next_layer is the first layer. *)
+    | None -> Some (named_layer_exprs next_layer)
+    (* hit this case for non-first layers *)
+    | Some last_layer_exprs -> Some (gen_layer_exprs last_layer_exprs next_layer) in
+
+  let output_layer_exprs_opt = List.fold_left ~init:None ~f:foldf layers in
+  Option.(
+    output_layer_exprs_opt >>= fun output_layer_exprs ->
+    List.zip output_layer_exprs (layer_exprs target) >>| fun output_target_pairs ->
+    Expr.(
+      let sq_error_sum = List.fold_left
+        ~init:(int_of 0)
+        ~f:(fun errorsum ((_, output), target) -> errorsum + ((target - output) ^ (int_of 2)))
+        output_target_pairs in
+      sq_error_sum / (int_of 2)
+    )
+  )
+
+let sigmoid_expr: unit expr = Expr.(
   (int_of 1) / ((int_of 1) + ((famous_const_of E) ^ (neg (var_of "x"))))
 )
 
@@ -322,7 +391,7 @@ let expr1 : unit expr = Expr.(
 )
 
 let () =
-  let named_sigmoid : string expr = name_tree sigmoid in
+  let named_sigmoid : string expr = name_tree sigmoid_expr in
   let named_expr1 = name_tree expr1 in
   let var_derivs = derive_and_expand_vars named_sigmoid in
   Map.iteri ~f:(fun ~key ~data -> print_endline (key ^ ": " ^ (string_of_expr data))) var_derivs
