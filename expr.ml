@@ -361,7 +361,7 @@ let gen_layer_exprs
 
 (* the last layer must have the same number of elements as the target layer,
  * otherwise will return None. *)
-let network_error_expr (layers: layer list) (target: layer) : unit expr option =
+let network_error_expr (layers: layer list) (target_var_base: string) : unit expr option =
   let foldf (last_layer_exprs_opt: (string * unit expr) list option) (next_layer: layer) =
     match last_layer_exprs_opt with
     (* hit this case when next_layer is the first layer. *)
@@ -372,6 +372,7 @@ let network_error_expr (layers: layer list) (target: layer) : unit expr option =
   let output_layer_exprs_opt = List.fold_left ~init:None ~f:foldf layers in
   Option.(
     output_layer_exprs_opt >>= fun output_layer_exprs ->
+    Some (layer target_var_base (List.length output_layer_exprs)) >>= fun target ->
     List.zip output_layer_exprs (layer_exprs target) >>| fun output_target_pairs ->
     Expr.(
       let sq_error_sum = List.fold_left
@@ -381,6 +382,53 @@ let network_error_expr (layers: layer list) (target: layer) : unit expr option =
       sq_error_sum / (int_of 2)
     )
   )
+
+let rec subst (expr: unit expr) (varmap: unit expr String.Map.t) : unit expr =
+  match expr with
+  | Const _ -> expr
+  | Var (_, v) -> begin
+    match Map.find varmap v with
+    | None -> expr
+    | Some var_expr -> var_expr
+  end
+  | Binop (_, op, left_expr, right_expr) ->
+    Binop ((), op, subst left_expr varmap, subst right_expr varmap)
+
+let gen_var_mappings (var_base: string) (var_values: unit expr list) : unit expr String.Map.t =
+  let indexed_values =
+    List.mapi ~f:(fun index var_value -> (index+1, var_value)) var_values in
+
+  List.fold_left
+    ~init:String.Map.empty
+    ~f:(fun mapacc (varindex, input_val) ->
+      Map.add mapacc ~key:(var_base ^ (string_of_int varindex)) ~data:input_val)
+    indexed_values
+
+(* TODO: enable Const floats *)
+let backprop
+  (network: layer list)
+  (input_var_base: string)
+  (target_var_base: string)
+  (* TODO: enable float inputs/outputs *)
+  (input: int list)
+  (target: int list) : unit expr String.Map.t option =
+    let input_exprs = List.map ~f:Expr.( int_of ) input in
+    let target_exprs = List.map ~f:Expr.( int_of ) target in
+    let input_mappings = gen_var_mappings input_var_base input_exprs in
+    let target_mappings = gen_var_mappings target_var_base target_exprs in
+    let merged_mappings = Map.merge
+      input_mappings
+      target_mappings
+      ~f:(fun ~key bindings ->
+        match bindings with
+        | `Both _ -> failwith "variables for inputs and outputs must be distinct."
+        | `Left value | `Right value -> Some value ) in
+
+    Option.(
+      network_error_expr network target_var_base >>= fun error_expr ->
+      Some (subst error_expr merged_mappings) >>| fun weight_var_error_expr ->
+      derive_and_expand_vars (name_tree weight_var_error_expr)
+    )
 
 let sigmoid_expr: unit expr = Expr.(
   (int_of 1) / ((int_of 1) + ((famous_const_of E) ^ (neg (var_of "x"))))
