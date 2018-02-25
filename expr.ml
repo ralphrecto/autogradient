@@ -227,7 +227,11 @@ let rec simple_differential (simple_mappings: unit expr String.Map.t) (simple_ex
       (* e^x rule *)
       | Some ( Const ((), Famous E) ), Some _ -> Expr.(
         ((famous_const_of E) ^ (right_unitized)) * (simple_differential simple_mappings right_unitized deriv_var) )
-      | _ -> failwith "operations not yet supported."
+      (* power rule *)
+      | Some e1, Some ( Const ((), Int n ) ) when n <> 0 ->
+        let new_power = n - 1 in
+        Expr.( (int_of n) * (e1 ^ ( int_of new_power)) * left_deriv )
+      | _ -> failwith "couldn't find mappings"
     end
   end
   | _ -> failwith "fatal state: called simple differential on non-simple expression."
@@ -327,12 +331,6 @@ let rec layer (base: string) (num: int) : layer =
     if num = 1 then [ newvar ]
     else newvar :: layer base (num - 1)
   end
-
-let layers: layer list = [
-  layer "x" 2 ;
-  layer "h" 3 ;
-  layer "y" 2
-]
 
 let named_layer_exprs (l: layer): (string * unit expr) list =
   List.map ~f:(fun nodename -> (nodename, Expr.( var_of nodename ))) l
@@ -438,8 +436,16 @@ let expr1 : unit expr = Expr.(
   (int_of 1) / ((famous_const_of E) ^ (neg (var_of "x")))
 )
 
+let test_network: layer list = [
+  layer "x" 2 ;
+  layer "h" 3 ;
+  layer "y" 2
+]
+
+let print_derivs (derivmap: unit expr String.Map.t) =
+  Map.iteri derivmap ~f:(fun ~key ~data -> key ^ ": " ^ (string_of_expr data) |> print_endline)
+
 let () =
-  let named_sigmoid : string expr = name_tree sigmoid_expr in
-  let named_expr1 = name_tree expr1 in
-  let var_derivs = derive_and_expand_vars named_sigmoid in
-  Map.iteri ~f:(fun ~key ~data -> print_endline (key ^ ": " ^ (string_of_expr data))) var_derivs
+  match backprop test_network "x" "t" [ 1; 2 ] [ 4; 5 ] with
+  | None -> failwith "could not compute backprop for network."
+  | Some derivs -> print_derivs derivs
