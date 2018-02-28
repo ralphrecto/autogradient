@@ -5,6 +5,7 @@ open Graph
 type famous_const = E | Pi
 type const =
   Int of int
+  | Float of float
   | Famous of famous_const
 
 type binop = Add | Sub | Mult | Div | Exp
@@ -34,6 +35,7 @@ module Expr = struct
   let ( ^ ) = generic_binop Exp
 
   let int_of i = Const ((), Int i)
+  let float_of f = Const ((), Float f)
   let famous_const_of f = Const ((), Famous f)
   let var_of varname = Var ((), varname)
   let neg e = (int_of (-1)) * e
@@ -42,6 +44,7 @@ end
 (* string_of functions for expr types. *)
 let string_of_const = function
   | Int i -> string_of_int i
+  | Float f -> string_of_float f
   | Famous E -> "e"
   | Famous Pi -> "pi"
 
@@ -428,6 +431,29 @@ let backprop
       derive_and_expand_vars (name_tree weight_var_error_expr)
     )
 
+let rec eval (env: unit expr String.Map.t) (expr: unit expr) : float option =
+  let eval_const = function
+    | Int i -> float_of_int i
+    | Float f -> f
+    | Famous E -> 2.717
+    | Famous Pi -> 3.14159265 in
+
+  let eval_op = function
+    | Add -> ( +. )
+    | Sub -> ( -. )
+    | Mult -> ( *. )
+    | Div -> ( /. )
+    | Exp -> ( ** ) in
+
+  match expr with
+  | Const (_, c) -> Some (eval_const c)
+  | Var (_, v) -> Option.( Map.find env v >>= eval env)
+  | Binop (_, op, left, right) -> Option.(
+    eval env left >>= fun leftval ->
+    eval env right >>| fun rightval ->
+    (eval_op op) leftval rightval
+  )
+
 let sigmoid_expr: unit expr = Expr.(
   (int_of 1) / ((int_of 1) + ((famous_const_of E) ^ (neg (var_of "x"))))
 )
@@ -441,6 +467,9 @@ let test_network: layer list = [
   layer "h" 3 ;
   layer "y" 2
 ]
+
+let print_weightmap (weightmap: float String.Map.t) =
+  Map.iteri weightmap ~f:(fun ~key ~data -> key ^ ": " ^ (string_of_float data) |> print_endline)
 
 let print_derivs (derivmap: unit expr String.Map.t) =
   Map.iteri derivmap ~f:(fun ~key ~data -> key ^ ": " ^ (string_of_expr data) |> print_endline)
