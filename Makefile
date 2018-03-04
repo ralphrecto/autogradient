@@ -1,5 +1,5 @@
 all:
-	corebuild -pkg ocamlgraph expr.byte
+	corebuild -pkg ocamlgraph main.byte
 
 clean:
 	rm -rf _build/

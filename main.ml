@@ -411,10 +411,10 @@ let backprop
   (input_var_base: string)
   (target_var_base: string)
   (* TODO: enable float inputs/outputs *)
-  (input: int list)
-  (target: int list) : unit expr String.Map.t option =
-    let input_exprs = List.map ~f:Expr.( int_of ) input in
-    let target_exprs = List.map ~f:Expr.( int_of ) target in
+  (input: float list)
+  (target: float list) : unit expr String.Map.t option =
+    let input_exprs = List.map ~f:Expr.( float_of ) input in
+    let target_exprs = List.map ~f:Expr.( float_of ) target in
     let input_mappings = gen_var_mappings input_var_base input_exprs in
     let target_mappings = gen_var_mappings target_var_base target_exprs in
     let merged_mappings = Map.merge
@@ -454,6 +454,50 @@ let rec eval (env: unit expr String.Map.t) (expr: unit expr) : float option =
     (eval_op op) leftval rightval
   )
 
+let list_to_vector (l: float list) (base: string) : float String.Map.t =
+  let base_append x = base ^ (string_of_int x) in
+  List.fold_left
+    ~init:String.Map.empty
+    ~f:(fun mapacc (i, x) -> String.Map.add mapacc ~key:(base_append i) ~data:x)
+    (List.mapi ~f:(fun i x -> (i, x)) l)
+
+let train
+  (network: layer list)
+  (inputs_and_targets: (float list * float list) list)
+  (initial_weights: float list) : float String.Map.t option =
+
+    let foldf
+      (weightacc: float String.Map.t option)
+      ((x, t): float list * float list) : float String.Map.t option =
+        Option.(
+          weightacc >>= fun weights ->
+          let weights_expr = Map.map ~f:Expr.( float_of ) weights in
+          backprop network "x" "t" x t >>= fun gradientexpr ->
+          Map.fold
+            gradientexpr
+            ~init:(Some String.Map.empty)
+            ~f:(fun ~key:weightvar ~data:gradient_expr_cmp mapacc_opt ->
+              mapacc_opt >>= fun mapacc ->
+              eval weights_expr gradient_expr_cmp >>| fun new_gradient_cmp ->
+              Map.add mapacc ~key:weightvar ~data:new_gradient_cmp
+            ) >>= fun gradient ->
+          Map.fold2
+            gradient
+            weights
+            ~init:(Some String.Map.empty)
+            ~f:(fun ~key:varname ~data mapacc_opt ->
+              mapacc_opt >>= fun mapacc ->
+              match data with
+              | `Both (float1, float2) -> Some (Map.add mapacc ~key:varname ~data:(float1 +. float2))
+              | _ -> None
+            )
+        ) in
+
+    List.fold_left
+      ~init:(Some (list_to_vector initial_weights "w"))
+      ~f:foldf
+      inputs_and_targets
+
 let sigmoid_expr: unit expr = Expr.(
   (int_of 1) / ((int_of 1) + ((famous_const_of E) ^ (neg (var_of "x"))))
 )
@@ -475,6 +519,6 @@ let print_derivs (derivmap: unit expr String.Map.t) =
   Map.iteri derivmap ~f:(fun ~key ~data -> key ^ ": " ^ (string_of_expr data) |> print_endline)
 
 let () =
-  match backprop test_network "x" "t" [ 1; 2 ] [ 4; 5 ] with
+  match backprop test_network "x" "t" [ 1.0; 2.0 ] [ 4.0; 5.0 ] with
   | None -> failwith "could not compute backprop for network."
   | Some derivs -> print_derivs derivs
