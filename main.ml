@@ -392,17 +392,22 @@ let rec eval (env: unit Expr.t String.Map.t) (expr: unit Expr.t) : float option 
     (eval_op op) leftval rightval
   )
 
-let list_to_vector (l: float list) (base: string) : float String.Map.t =
-  let base_append x = base ^ (string_of_int x) in
-  List.fold_left
-    ~init:String.Map.empty
-    ~f:(fun mapacc (i, x) -> String.Map.add mapacc ~key:(base_append i) ~data:x)
-    (List.mapi ~f:(fun i x -> (i, x)) l)
+let weight_names (network: layer list) : string list =
+  let foldf ((prev_layer_opt, acclist): layer option * string list) (next_layer: layer) =
+    match prev_layer_opt with
+    | None -> (Some next_layer, acclist)
+    | Some prev_layer ->
+        let new_vars = List.map
+          ~f:(fun (prev, next) -> "w" ^ prev ^ "_" ^ next)
+          (List.cartesian_product prev_layer next_layer) in
+        (Some next_layer, List.rev_append acclist new_vars) in
+
+  List.fold_left ~f:foldf ~init:(None, []) network |> snd
 
 let train
   (network: layer list)
   (inputs_and_targets: (float list * float list) list)
-  (initial_weights: float list) : float String.Map.t option =
+  (initial_weight: float) : float String.Map.t option =
 
     let foldf
       (weightacc: float String.Map.t option)
@@ -431,8 +436,13 @@ let train
             )
         ) in
 
+    let initial_weights = List.fold_left
+      ~f:(fun accmap weightname -> Map.add accmap ~key:weightname ~data:(Random.float 1.0))
+      ~init:String.Map.empty
+      (weight_names network) in
+
     List.fold_left
-      ~init:(Some (list_to_vector initial_weights "w"))
+      ~init:(Some initial_weights)
       ~f:foldf
       inputs_and_targets
 
@@ -481,10 +491,12 @@ let () =
 
   let network = [
     layer "x" 1;
-    layer "h" 6;
+    layer "h" 5;
     layer "y" 1
   ] in
 
-  match train network inputs_and_targets (fill 0. 12) with
+  match train network inputs_and_targets 0. with
   | None -> failwith "could not compute backprop for network."
-  | Some weightmap -> print_weightmap weightmap
+  | Some weightmap ->
+      print_weightmap weightmap;
+
