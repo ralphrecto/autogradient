@@ -518,7 +518,35 @@ let print_weightmap (weightmap: float String.Map.t) =
 let print_derivs (derivmap: unit expr String.Map.t) =
   Map.iteri derivmap ~f:(fun ~key ~data -> key ^ ": " ^ (string_of_expr data) |> print_endline)
 
+let input_list (chan: in_channel): string list =
+  let s = Stream.from (fun _ -> try Some (input_line chan) with End_of_file -> None) in
+  let rec exhaust acclist =
+    try exhaust (Stream.next s :: acclist)
+    with Stream.Failure -> acclist in
+  exhaust [] |> List.rev
+
+let rec fill filler n =
+  if n < 1 then failwith "n must be >= 1"
+  else if n = 1 then [filler]
+  else filler :: fill filler (n - 1)
+
 let () =
-  match backprop test_network "x" "t" [ 1.0; 2.0 ] [ 4.0; 5.0 ] with
+  let input_lines = input_list stdin in
+  let inputs_and_targets =
+    List.map
+    ~f:(fun input_line ->
+      let strlist = String.split ~on:',' input_line in
+      let floatlist = List.map ~f:(fun s -> StdLabels.String.trim s |> float_of_string) strlist in
+      ([List.nth_exn floatlist 0], [List.nth_exn floatlist 1])
+    )
+    input_lines in
+
+  let network = [
+    layer "x" 1;
+    layer "h" 6;
+    layer "y" 1
+  ] in
+
+  match train network inputs_and_targets (fill 0. 12) with
   | None -> failwith "could not compute backprop for network."
-  | Some derivs -> print_derivs derivs
+  | Some weightmap -> print_weightmap weightmap
